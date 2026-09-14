@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Motor-Espelho · Roteirização PANCO Suzano</title>
+<script src="xlsx.full.min.js"></script>
+<style>
+:root{--bg:#0e1216;--pan:#161c24;--pan2:#1b222c;--tx:#e8eef6;--mut:#8b98a9;--line:#28303c;--ac:#3b82f6;--var:#3b82f6;--rede:#ef4444;--part:#f59e0b;--dist:#10b981;--terc:#c084fc;--ok:#22c55e}
+@media(prefers-color-scheme:light){:root{--bg:#eef1f5;--pan:#fff;--pan2:#f4f7fb;--tx:#0f1a2b;--mut:#5b6675;--line:#dde4ed}}
+*{box-sizing:border-box}html,body{margin:0;height:100%;font:14px/1.45 system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx)}
+#app{display:flex;flex-direction:column;height:100vh}
+header{padding:12px 18px;border-bottom:1px solid var(--line);background:var(--pan);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:700}header .tag{font-size:11px;color:var(--mut)}
+.up{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.drop{border:1.5px dashed var(--line);border-radius:9px;padding:7px 11px;font-size:12px;cursor:pointer;background:var(--pan2);display:flex;align-items:center;gap:7px;transition:.15s}
+.drop:hover{border-color:var(--ac)}.drop.ok{border-color:var(--ok);border-style:solid}.drop .st{color:var(--mut);font-size:11px}
+.drop.ok .st{color:var(--ok)}
+input[type=file]{display:none}
+.datebox{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)}
+.datebox input{background:var(--pan2);border:1px solid var(--line);color:var(--tx);border-radius:7px;padding:6px 8px;font:inherit}
+button.run{background:var(--ac);color:#fff;border:0;border-radius:9px;padding:9px 18px;font-weight:700;font-size:13px;cursor:pointer}
+button.run:disabled{opacity:.4;cursor:not-allowed}
+#body{flex:1;display:flex;min-height:0}
+#side{width:320px;background:var(--pan);border-right:1px solid var(--line);overflow-y:auto;flex-shrink:0}
+.kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--line)}
+.kpi{background:var(--pan);padding:9px 10px;text-align:center}.kpi b{display:block;font-size:18px}.kpi span{font-size:9px;color:var(--mut);text-transform:uppercase;letter-spacing:.03em}
+.flt{display:flex;gap:5px;padding:9px 12px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.flt button{background:var(--pan2);color:var(--tx);border:1px solid var(--line);border-radius:13px;padding:4px 10px;font-size:11px;cursor:pointer}
+.flt button.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.rota{padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:9px;align-items:flex-start}
+.rota:hover{background:var(--pan2)}.rota.sel{background:#3b82f61a;border-left:3px solid var(--ac)}
+.dot{width:12px;height:12px;border-radius:3px;flex-shrink:0;margin-top:2px}
+.ri{flex:1;min-width:0}.ri .t{font-weight:600;font-size:12px;display:flex;align-items:center;gap:6px}
+.ri .m{color:var(--mut);font-size:10.5px;margin-top:2px}
+.badge{font-size:8.5px;padding:1px 5px;border-radius:4px;font-weight:700;color:#fff}
+.b-VAREJO{background:var(--var)}.b-REDE{background:var(--rede)}.b-PARTICULAR{background:var(--part);color:#000}.b-DISTRIB{background:var(--dist)}
+.fic{color:var(--terc);font-weight:700}.warn{color:var(--rede);font-weight:700}
+#main{flex:1;position:relative;overflow:hidden}
+#svgwrap{width:100%;height:100%;overflow:hidden;background:var(--bg)}
+#tip{position:absolute;background:#000e;color:#fff;padding:7px 10px;border-radius:7px;font-size:11px;pointer-events:none;display:none;z-index:30;max-width:230px;line-height:1.4}
+.setor-bg{fill:none;stroke:var(--line);stroke-width:1;stroke-dasharray:3 3;opacity:.45}
+.seqn{font-size:8px;fill:#fff;font-weight:700;pointer-events:none;text-anchor:middle}
+.pt{cursor:pointer}
+#empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--mut);gap:8px;text-align:center;padding:20px}
+#empty svg{opacity:.3}
+.detalhe{padding:10px 12px;border-bottom:1px solid var(--line);font-size:11.5px;display:none}
+.detalhe.show{display:block}.detalhe ol{margin:4px 0 0;padding-left:20px}.detalhe li{padding:2px 0}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--rede);color:#fff;padding:9px 16px;border-radius:8px;font-size:13px;z-index:50;display:none}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div><h1>🗺️ Motor-Espelho <span class="tag">· PANCO CD Suzano</span></h1></div>
+    <div class="up">
+      <div class="datebox">Entrega: <input type="date" id="dataAlvo"></div>
+      <label class="drop" id="dropPos"><span>📦 POS (pedidos)</span><span class="st" id="stPos">—</span>
+        <input type="file" id="filePos" accept=".xlsx,.xls,.csv"></label>
+      <label class="drop" id="dropEsc"><span>🚚 Escala própria</span><span class="st" id="stEsc">—</span>
+        <input type="file" id="fileEsc" accept=".xlsx,.xls"></label>
+      <label class="drop" id="dropTerc"><span>➕ Terceiros (opc)</span><span class="st" id="stTerc">—</span>
+        <input type="file" id="fileTerc" accept=".xlsx,.xls"></label>
+      <button class="run" id="btnRun" disabled>Roteirizar</button>
+    </div>
+  </header>
+  <div id="body">
+    <div id="side">
+      <div class="kpis" id="kpis" style="display:none">
+        <div class="kpi"><b id="kRotas">0</b><span>rotas</span></div>
+        <div class="kpi"><b id="kCli">0</b><span>clientes</span></div>
+        <div class="kpi"><b id="kPeso">0</b><span>peso</span></div>
+        <div class="kpi"><b id="kVuc">0</b><span>VUC</span></div>
+        <div class="kpi"><b id="k34">0</b><span>3/4</span></div>
+        <div class="kpi"><b id="kFic">0</b><span>fictícia</span></div>
+      </div>
+      <div class="flt" id="flt" style="display:none">
+        <button class="on" data-f="all">Todas</button>
+        <button data-f="VAREJO">Varejo</button>
+        <button data-f="REDE">Rede</button>
+        <button data-f="fic">Fictícia</button>
+      </div>
+      <div class="detalhe" id="detalhe"></div>
+      <div id="lst"></div>
+    </div>
+    <div id="main">
+      <div id="empty">
+        <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 20l-5.4 1.8L3 4l6-2 6 2 6-2 .6 17.8L15 22l-6-2z"/><path d="M9 2v18M15 4v18"/></svg>
+        <div>Suba o <b>POS</b> e a <b>escala</b>, confirme a data e clique em <b>Roteirizar</b>.</div>
+      </div>
+      <div id="svgwrap" style="display:none"><svg id="svg" width="100%" height="100%"></svg></div>
+      <div id="tip"></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="dados.js"></script>
+<script src="motor.js"></script>
+<script src="parsers.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
