@@ -443,20 +443,20 @@ function roteirizar(dados, pos, escala, dataAlvo){
   for (const s in porSetor){
     const varejo=porSetor[s].VAREJO;
     if (!varejo.length) continue;
-    // teto de clientes força um número mínimo de rotas (nunca menos que o molde)
+    // RESPEITA O HISTÓRICO: k = número de rotas que o setor teve no histórico.
+    // Só força mais se o peso obriga (> 3/4 = 1800 kg). O teto de 17 entregas
+    // é tratado DEPOIS por aliviaVarejoInteligente (balanceia com vizinha ou
+    // cria rota mista rede+varejo), preservando o desenho dos clientes juntos.
     const kMolde = nRotasSetor[s]||1;
-    const kPorCli = Math.ceil(varejo.length / CFG.MAX_CLI_VAREJO);
     const kPorPeso = Math.ceil(varejo.reduce((a,c)=>a+peso(c),0) / CFG.TRESQ);
-    let k = Math.max(kMolde, kPorCli, kPorPeso);
+    let k = Math.max(kMolde, kPorPeso);
     let grupos=divide(varejo, k);
-    // quebra grupos que ainda estouram teto (peso OU clientes) OU preferem 2 VUCs a 1 3/4
+    // quebra grupos que ainda estouram peso OU merecem 2 VUCs no lugar de 1 3/4
     let fixed=[];
     for (let g of grupos){
       let precisaQuebra = ()=> {
         const pw = g.reduce((a,c)=>a+peso(c),0);
         if (pw>CFG.TRESQ) return true;
-        if (g.length>CFG.MAX_CLI_VAREJO) return true;
-        // prefere 2 VUCs a 1 3/4: se peso passa VUC mas cabe em 2 VUCs, divide
         if (CFG.PREFERE_2_VUC && pw>CFG.VUC && pw<=2*CFG.VUC && g.length>=2) return true;
         return false;
       };

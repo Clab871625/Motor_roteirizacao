@@ -40,26 +40,19 @@ document.getElementById('btnRun').addEventListener('click', ()=>{
   const escala = ESC ? { proprios:ESC.frota, terceiros:(TERC?TERC.frota:[]) } : null;
   try{
     RESULT=window.MotorEspelho.roteirizar(DADOS, POS, escala, data);
-    // mostra o wrap ANTES de medir, senão main pode ter altura 0 na primeira renderização
     document.getElementById('empty').style.display='none';
-    const wrap=document.getElementById('svgwrap');
-    // força o wrapper a ocupar todo o main (evita altura 0 em Chromium)
-    wrap.style.cssText='display:block;position:absolute;inset:0;background:var(--bg)';
-    document.getElementById('svg').style.cssText='display:block;width:100%;height:100%';
+    document.getElementById('map').style.display='block';
     document.getElementById('kpis').style.display='grid';
     document.getElementById('flt').style.display='flex';
     requestAnimationFrame(()=>render(RESULT));
   }catch(e){ toast("Erro ao roteirizar: "+e.message); console.error(e); }
 });
 
-/* ---------- render mapa + lista ---------- */
-function cor(i){ const h=(i*137.508)%360; return `hsl(${h},60%,55%)`; }
+/* ---------- render mapa (Leaflet) + lista ---------- */
+let LMAP=null, LLAYERS=[];
+function cor(i){ const h=(i*137.508)%360; return `hsl(${h},70%,50%)`; }
 function render(res){
   const rotas=res.rotas;
-  document.getElementById('empty').style.display='none';
-  document.getElementById('svgwrap').style.display='block';
-  document.getElementById('kpis').style.display='grid';
-  document.getElementById('flt').style.display='flex';
   if (!rotas.length){ toast("Nenhuma rota gerada (verifique o POS)."); return; }
 
   // kpis
@@ -75,49 +68,56 @@ function render(res){
 
   rotas.forEach((r,i)=>r._cor=cor(i));
 
-  // bounds — pontos com lat/lng + CD
-  const pts=rotas.flatMap(r=>r.clientes).filter(c=>c.lat!=null && c.lng!=null).concat([CD_PT()]);
-  if (pts.length<2){ toast("Sem coordenadas nos clientes — mapa vazio."); return; }
-  const minLat=Math.min(...pts.map(p=>p.lat)), maxLat=Math.max(...pts.map(p=>p.lat));
-  const minLng=Math.min(...pts.map(p=>p.lng)), maxLng=Math.max(...pts.map(p=>p.lng));
-  // viewBox FIXO — o SVG escala pra caber no wrapper via preserveAspectRatio
-  const W=1000, H=700, pad=40;
-  const xy=(lat,lng)=>({ x:pad+(lng-minLng)/(maxLng-minLng||1)*(W-2*pad), y:pad+(maxLat-lat)/(maxLat-minLat||1)*(H-2*pad) });
+  // Leaflet: cria mapa 1x, reusa depois
+  if (!LMAP){
+    LMAP = L.map('map', {preferCanvas:true, zoomControl:true}).setView([CD_PT().lat, CD_PT().lng], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom:19, attribution:'© OpenStreetMap'
+    }).addTo(LMAP);
+  }
+  setTimeout(()=>LMAP.invalidateSize(),0);
 
-  const svg=document.getElementById('svg');
-  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
-  svg.setAttribute('preserveAspectRatio','xMidYMid meet');
-  svg.innerHTML='';
-  const NS="http://www.w3.org/2000/svg";
-  const el=(t,a)=>{ const e=document.createElementNS(NS,t); for(const k in a)e.setAttribute(k,a[k]); return e; };
+  // limpa layers anteriores
+  LLAYERS.forEach(l=>LMAP.removeLayer(l)); LLAYERS=[];
 
-  // setores de fundo
-  (window.SETORES_BBOX||[]).forEach(s=>{
-    const pp=s.map(([la,ln])=>{const p=xy(la,ln);return `${p.x.toFixed(0)},${p.y.toFixed(0)}`;}).join(" ");
-    svg.appendChild(el('polygon',{points:pp,class:'setor-bg'}));
-  });
   // CD
-  const cd=xy(CD_PT().lat,CD_PT().lng);
-  svg.appendChild(el('circle',{cx:cd.x,cy:cd.y,r:7,fill:'var(--dist)',stroke:'#fff','stroke-width':2}));
+  const cdMarker = L.circleMarker([CD_PT().lat, CD_PT().lng],
+    {radius:9, color:'#fff', fillColor:'#10b981', fillOpacity:1, weight:2})
+    .bindPopup('<b>CD Suzano</b>').addTo(LMAP);
+  LLAYERS.push(cdMarker);
 
   const grupos={};
-  const tip=document.getElementById('tip');
+  const bounds = L.latLngBounds();
+  bounds.extend([CD_PT().lat, CD_PT().lng]);
+
   rotas.forEach(r=>{
-    const g=el('g',{'data-id':r.id,'data-onda':r.onda,'data-fic':(r.placa||'').startsWith('SUZ')?1:0});
-    let d=`M${cd.x},${cd.y}`;
-    const cpts=r.clientes.filter(c=>c.lat!=null).map(c=>({...c,...xy(c.lat,c.lng)}));
-    cpts.forEach(p=>d+=` L${p.x.toFixed(1)},${p.y.toFixed(1)}`);
-    g.appendChild(el('path',{d,fill:'none',stroke:r._cor,'stroke-width':2,opacity:.7}));
-    cpts.forEach((p,i)=>{
-      const c=el('circle',{cx:p.x,cy:p.y,r:7,fill:r._cor,stroke:'#fff','stroke-width':1,class:'pt'});
-      c.addEventListener('mouseover',()=>{ tip.style.display='block'; tip.innerHTML=`<b>${i+1}. ${(p.razao||'?').slice(0,32)}</b><br>cód ${p.cod} · ${Math.round(p.peso||0)}kg<br>${p.tipo||''}<br><i>Rota ${r.id} · ${r.setor} · ${r.placa||r.porte}</i>`; });
-      c.addEventListener('mousemove',e=>{ const b=svg.getBoundingClientRect(); tip.style.left=(e.clientX-b.left+12)+'px'; tip.style.top=(e.clientY-b.top+12)+'px'; });
-      c.addEventListener('mouseout',()=>tip.style.display='none');
-      g.appendChild(c);
-      const tx=el('text',{x:p.x,y:p.y+3,class:'seqn'}); tx.textContent=i+1; g.appendChild(tx);
+    const cor=r._cor;
+    const cpts=r.clientes.filter(c=>c.lat!=null && c.lng!=null);
+    const layers=[];
+    // polyline CD -> sequência -> CD
+    const latlngs = [[CD_PT().lat, CD_PT().lng], ...cpts.map(c=>[c.lat,c.lng]), [CD_PT().lat, CD_PT().lng]];
+    const line = L.polyline(latlngs, {color:cor, weight:3, opacity:0.7}).addTo(LMAP);
+    layers.push(line); LLAYERS.push(line);
+    // marcador numerado por cliente
+    cpts.forEach((c,i)=>{
+      bounds.extend([c.lat, c.lng]);
+      const icon = L.divIcon({
+        className:'rota-label',
+        html:`<div style="background:${cor};color:#fff;font:700 10px system-ui;padding:2px 5px;border-radius:9px;border:2px solid #fff;box-shadow:0 1px 3px #0006;min-width:16px;text-align:center">${i+1}</div>`,
+        iconSize:[22,18], iconAnchor:[11,9]
+      });
+      const m = L.marker([c.lat, c.lng], {icon});
+      m.bindPopup(`<b>${i+1}. ${(c.razao||'?').slice(0,50)}</b><br>
+        cód ${c.cod} · ${Math.round(c.peso||0)}kg<br>
+        ${c.tipo||''}<br>${c.bairro||''} · ${c.cidade||''}<br>
+        <i>Rota ${r.id} · ${r.setor} · ${r.placa||r.porte}</i>`);
+      m.addTo(LMAP);
+      layers.push(m); LLAYERS.push(m);
     });
-    grupos[r.id]=g; svg.appendChild(g);
+    grupos[r.id]={onda:r.onda, fic:(r.placa||'').startsWith('SUZ'), layers, cor};
   });
+
+  if (bounds.isValid()) LMAP.fitBounds(bounds, {padding:[30,30]});
 
   // lista
   const lst=document.getElementById('lst'); lst.innerHTML='';
@@ -130,7 +130,21 @@ function render(res){
       <div class="m">${r.clientes.length} cli · ${r.peso}kg · ${r.tempo_h}h${warn} · <span class="${fic?'fic':''}">${r.placa||r.porte}</span></div></div>`;
     div.addEventListener('click',()=>{
       document.querySelectorAll('.rota').forEach(x=>x.classList.remove('sel')); div.classList.add('sel');
-      Object.values(grupos).forEach(g=>g.style.opacity=.12); grupos[r.id].style.opacity=1;
+      // destaca só a rota clicada: as outras ficam com opacidade baixa
+      Object.entries(grupos).forEach(([id,g])=>{
+        const foco = +id===r.id;
+        g.layers.forEach(l=>{
+          if (l.setStyle) l.setStyle({opacity: foco?0.9:0.15, fillOpacity: foco?1:0.2});
+          if (l._icon) l._icon.style.opacity = foco?1:0.25;
+        });
+      });
+      // centraliza no cluster da rota
+      if (LMAP){
+        const b = L.latLngBounds();
+        r.clientes.filter(c=>c.lat!=null).forEach(c=>b.extend([c.lat,c.lng]));
+        b.extend([CD_PT().lat, CD_PT().lng]);
+        if (b.isValid()) LMAP.fitBounds(b, {padding:[40,40]});
+      }
       mostraDetalhe(r);
     });
     lst.appendChild(div);
@@ -156,9 +170,18 @@ document.getElementById('flt').addEventListener('click',e=>{
     const fic=el.dataset.fic==='1';
     el.style.display = (f==='all'||(f==='fic'?fic:el.dataset.onda===f))?'':'none';
   });
-  if (window._grupos) Object.entries(window._grupos).forEach(([id,g])=>{
+  if (window._grupos && LMAP) Object.entries(window._grupos).forEach(([id,g])=>{
     const el=document.querySelector('.rota[data-id="'+id+'"]');
-    g.style.display = (el && el.style.display!=='none')?'':'none'; g.style.opacity=1;
+    const visivel = el && el.style.display!=='none';
+    g.layers.forEach(l=>{
+      if (visivel){
+        if (!LMAP.hasLayer(l)) l.addTo(LMAP);
+        if (l.setStyle) l.setStyle({opacity:0.7, fillOpacity:1});
+        if (l._icon) l._icon.style.opacity=1;
+      } else {
+        if (LMAP.hasLayer(l)) LMAP.removeLayer(l);
+      }
+    });
   });
   document.getElementById('detalhe').classList.remove('show');
 });

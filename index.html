@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Motor-Espelho · Roteirização PANCO Suzano</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="xlsx.full.min.js"></script>
 <style>
 :root{--bg:#0e1216;--pan:#161c24;--pan2:#1b222c;--tx:#e8eef6;--mut:#8b98a9;--line:#28303c;--ac:#3b82f6;--var:#3b82f6;--rede:#ef4444;--part:#f59e0b;--dist:#10b981;--terc:#c084fc;--ok:#22c55e}
@@ -37,7 +39,11 @@ button.run:disabled{opacity:.4;cursor:not-allowed}
 .b-VAREJO{background:var(--var)}.b-REDE{background:var(--rede)}.b-PARTICULAR{background:var(--part);color:#000}.b-DISTRIB{background:var(--dist)}.b-MIX{background:linear-gradient(90deg,var(--var) 50%,var(--rede) 50%)}
 .fic{color:var(--terc);font-weight:700}.warn{color:var(--rede);font-weight:700}
 #main{flex:1;position:relative;overflow:hidden}
-#svgwrap{width:100%;height:100%;overflow:hidden;background:var(--bg)}
+#map{position:absolute;inset:0;background:var(--bg)}
+.rota-label{background:transparent;border:0}
+.leaflet-container{background:var(--bg)!important;font-family:system-ui}
+.leaflet-popup-content-wrapper{background:var(--pan);color:var(--tx)}
+.leaflet-popup-tip{background:var(--pan)}
 #tip{position:absolute;background:#000e;color:#fff;padding:7px 10px;border-radius:7px;font-size:11px;pointer-events:none;display:none;z-index:30;max-width:230px;line-height:1.4}
 .setor-bg{fill:none;stroke:var(--line);stroke-width:1;stroke-dasharray:3 3;opacity:.45}
 .seqn{font-size:8px;fill:#fff;font-weight:700;pointer-events:none;text-anchor:middle}
@@ -88,7 +94,7 @@ button.run:disabled{opacity:.4;cursor:not-allowed}
         <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 20l-5.4 1.8L3 4l6-2 6 2 6-2 .6 17.8L15 22l-6-2z"/><path d="M9 2v18M15 4v18"/></svg>
         <div>Suba o <b>POS</b> e a <b>escala</b>, confirme a data e clique em <b>Roteirizar</b>.</div>
       </div>
-      <div id="svgwrap" style="display:none"><svg id="svg" width="100%" height="100%"></svg></div>
+      <div id="map" style="display:none"></div>
       <div id="tip"></div>
     </div>
   </div>
