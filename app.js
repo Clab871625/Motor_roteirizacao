@@ -40,7 +40,12 @@ document.getElementById('btnRun').addEventListener('click', ()=>{
   const escala = ESC ? { proprios:ESC.frota, terceiros:(TERC?TERC.frota:[]) } : null;
   try{
     RESULT=window.MotorEspelho.roteirizar(DADOS, POS, escala, data);
-    render(RESULT);
+    // mostra o wrap ANTES de medir, senão main pode ter altura 0 na primeira renderização
+    document.getElementById('empty').style.display='none';
+    document.getElementById('svgwrap').style.display='block';
+    document.getElementById('kpis').style.display='grid';
+    document.getElementById('flt').style.display='flex';
+    requestAnimationFrame(()=>render(RESULT));
   }catch(e){ toast("Erro ao roteirizar: "+e.message); console.error(e); }
 });
 
@@ -52,6 +57,7 @@ function render(res){
   document.getElementById('svgwrap').style.display='block';
   document.getElementById('kpis').style.display='grid';
   document.getElementById('flt').style.display='flex';
+  if (!rotas.length){ toast("Nenhuma rota gerada (verifique o POS)."); return; }
 
   // kpis
   const totCli=rotas.reduce((s,r)=>s+r.clientes.length,0);
@@ -66,14 +72,19 @@ function render(res){
 
   rotas.forEach((r,i)=>r._cor=cor(i));
 
-  // bounds
-  const pts=rotas.flatMap(r=>r.clientes).filter(c=>c.lat!=null).concat([CD_PT()]);
+  // bounds — pontos com lat/lng + CD
+  const pts=rotas.flatMap(r=>r.clientes).filter(c=>c.lat!=null && c.lng!=null).concat([CD_PT()]);
+  if (pts.length<2){ toast("Sem coordenadas nos clientes — mapa vazio."); return; }
   const minLat=Math.min(...pts.map(p=>p.lat)), maxLat=Math.max(...pts.map(p=>p.lat));
   const minLng=Math.min(...pts.map(p=>p.lng)), maxLng=Math.max(...pts.map(p=>p.lng));
-  const W=document.getElementById('main').clientWidth, H=document.getElementById('main').clientHeight, pad=40;
+  // viewBox FIXO — o SVG escala pra caber no wrapper via preserveAspectRatio
+  const W=1000, H=700, pad=40;
   const xy=(lat,lng)=>({ x:pad+(lng-minLng)/(maxLng-minLng||1)*(W-2*pad), y:pad+(maxLat-lat)/(maxLat-minLat||1)*(H-2*pad) });
 
-  const svg=document.getElementById('svg'); svg.setAttribute('viewBox',`0 0 ${W} ${H}`); svg.innerHTML='';
+  const svg=document.getElementById('svg');
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+  svg.innerHTML='';
   const NS="http://www.w3.org/2000/svg";
   const el=(t,a)=>{ const e=document.createElementNS(NS,t); for(const k in a)e.setAttribute(k,a[k]); return e; };
 

@@ -18,6 +18,9 @@ const CFG = {
   FREQ_FIXO: 2,            // cliente fixo = aparece em >=2 das 4 semanas
   DISTRIB_PLACA: "FFW9E44",
   TEMPO: { REDE: 110, PARTICULAR: 40, VAREJO: 16 },
+  MAX_CLI_VAREJO: 17,      // teto de entregas por rota varejo (regra do CD)
+  MAX_CLI_PART: 12,        // teto de entregas por rota de particularidade
+  PREFERE_2_VUC: true,     // dividir 1 rota que caberia num 3/4 em 2 VUCs
 };
 const DIAS = ["segunda","terca","quarta","quinta","sexta","sabado","domingo"];
 
@@ -207,11 +210,24 @@ function roteirizar(dados, pos, escala, dataAlvo){
   for (const s in porSetor){
     const varejo=porSetor[s].VAREJO;
     if (!varejo.length) continue;
-    let grupos=divide(varejo, nRotasSetor[s]||1);
-    // quebra grupos que passam 3/4
+    // teto de clientes força um número mínimo de rotas (nunca menos que o molde)
+    const kMolde = nRotasSetor[s]||1;
+    const kPorCli = Math.ceil(varejo.length / CFG.MAX_CLI_VAREJO);
+    const kPorPeso = Math.ceil(varejo.reduce((a,c)=>a+peso(c),0) / CFG.TRESQ);
+    let k = Math.max(kMolde, kPorCli, kPorPeso);
+    let grupos=divide(varejo, k);
+    // quebra grupos que ainda estouram teto (peso OU clientes) OU preferem 2 VUCs a 1 3/4
     let fixed=[];
     for (let g of grupos){
-      while (g.reduce((a,c)=>a+peso(c),0)>CFG.TRESQ && g.length>1){
+      let precisaQuebra = ()=> {
+        const pw = g.reduce((a,c)=>a+peso(c),0);
+        if (pw>CFG.TRESQ) return true;
+        if (g.length>CFG.MAX_CLI_VAREJO) return true;
+        // prefere 2 VUCs a 1 3/4: se peso passa VUC mas cabe em 2 VUCs, divide
+        if (CFG.PREFERE_2_VUC && pw>CFG.VUC && pw<=2*CFG.VUC && g.length>=2) return true;
+        return false;
+      };
+      while (precisaQuebra() && g.length>1){
         const sub=divide(g,2); if (sub.length<2) break; fixed.push(sub[1]); g=sub[0];
       }
       fixed.push(g);
@@ -225,7 +241,11 @@ function roteirizar(dados, pos, escala, dataAlvo){
     const rv=rotas.filter(r=>r.setor===s && r.onda==="VAREJO");
     for (const p of porSetor[s].PARTICULAR){
       if (peso(p)>CFG.TRESQ){ rotas.push({setor:s,onda:"PARTICULAR",clientes:[p],placa:terc()}); continue; }
-      const cand=rv.filter(r=>r.clientes.reduce((a,c)=>a+peso(c),0)+peso(p)<=CFG.TRESQ);
+      // só encaixa na varejo se não estourar peso NEM o teto de entregas
+      const cand=rv.filter(r=>
+        r.clientes.reduce((a,c)=>a+peso(c),0)+peso(p)<=CFG.TRESQ
+        && r.clientes.length < CFG.MAX_CLI_VAREJO
+      );
       if (cand.length && p.lat!=null){
         cand.sort((a,b)=>hav(p,centro(a.clientes))-hav(p,centro(b.clientes)));
         cand[0].clientes.push(p);
@@ -244,7 +264,11 @@ function roteirizar(dados, pos, escala, dataAlvo){
     let grandes=leves.filter(x=>!ehComp(x.razao));
     const rv=rotas.filter(r=>r.setor===s && r.onda==="VAREJO");
     for (const cp of comp){
-      const cand=rv.filter(r=>r.clientes.length<=CFG.COMP_TETO && r.clientes.reduce((a,c)=>a+peso(c),0)+peso(cp)<=CFG.TRESQ);
+      const cand=rv.filter(r=>
+        r.clientes.length<=CFG.COMP_TETO
+        && r.clientes.length < CFG.MAX_CLI_VAREJO
+        && r.clientes.reduce((a,c)=>a+peso(c),0)+peso(cp)<=CFG.TRESQ
+      );
       if (cand.length && cp.lat!=null){ cand.sort((a,b)=>hav(cp,centro(a.clientes))-hav(cp,centro(b.clientes))); cand[0].clientes.push(cp); }
       else grandes.push(cp);
     }
