@@ -21,6 +21,10 @@ const CFG = {
   MAX_CLI_VAREJO: 17,      // teto de entregas por rota varejo (regra do CD)
   MAX_CLI_PART: 12,        // teto de entregas por rota de particularidade
   PREFERE_2_VUC: true,     // dividir 1 rota que caberia num 3/4 em 2 VUCs
+  ALIVIO_VAREJO: 15,       // acima disso, tenta empurrar cliente pra rota rede vizinha
+  MAX_KM_ROTA: 90,         // deslocamento máx por rota (estrada, ida+volta CD)
+  DIF_CLI_BAL: 3,          // diferença mínima de clientes entre vizinhas pra rebalancear
+  DIF_PESO_BAL: 400,       // diferença mínima de peso (kg) pra considerar rota "pesada"
 };
 const DIAS = ["segunda","terca","quarta","quinta","sexta","sabado","domingo"];
 
@@ -146,6 +150,114 @@ function balanceiaVizinhas(grupos, capKg, ondaRede){
     if (!moved) break;
   }
   return grupos;
+}
+
+/* ---------- deslocamento total de uma rota (km, ida + entregas + volta) ---------- */
+function desloc(cls){
+  const pts=cls.filter(c=>c.lat!=null);
+  if (!pts.length) return 0;
+  let d=0, cur=CD, rest=pts.slice();
+  while (rest.length){
+    let k=0,best=1e9;
+    for (let i=0;i<rest.length;i++){const dd=hav(cur,rest[i]); if(dd<best){best=dd;k=i;}}
+    d+=best; cur=rest[k]; rest.splice(k,1);
+  }
+  d+=hav(cur,CD);
+  return d*CFG.DIST_FACTOR;
+}
+
+/* ---------- A) ALÍVIO varejo -> rede do mesmo setor ---------- */
+function aliviaVarejoEmRede(rotas){
+  for (let iter=0; iter<20; iter++){
+    let moveu=false;
+    const setores=[...new Set(rotas.map(r=>r.setor))];
+    for (const s of setores){
+      const vs=rotas.filter(r=>r.setor===s && r.onda==="VAREJO" && r.clientes.length>CFG.ALIVIO_VAREJO);
+      const rs=rotas.filter(r=>r.setor===s && r.onda==="REDE" && !r.placa);
+      if (!vs.length || !rs.length) continue;
+      for (const v of vs){
+        // ordena clientes varejo por proximidade média aos centros das rotas rede
+        const cds=rs.map(r=>({r,c:centro(r.clientes),pw:r.clientes.reduce((a,c)=>a+peso(c),0)}));
+        const cand=v.clientes.filter(c=>c.lat!=null).map(c=>{
+          let best=1e9,alvo=null;
+          for (const x of cds){
+            const pesoNovo=x.pw+peso(c);
+            if (pesoNovo>CFG.TRESQ) continue;
+            const d=hav(c,x.c);
+            if (d<best){ best=d; alvo=x; }
+          }
+          return {c,alvo,d:best};
+        }).filter(x=>x.alvo).sort((a,b)=>a.d-b.d);
+        if (cand.length){
+          const {c,alvo}=cand[0];
+          alvo.r.clientes.push(c);
+          v.clientes.splice(v.clientes.indexOf(c),1);
+          moveu=true;
+          break;
+        }
+      }
+      if (moveu) break;
+    }
+    if (!moveu) break;
+  }
+}
+
+/* ---------- B) BALANCEAMENTO peso × entregas entre vizinhas do mesmo setor ---------- */
+function posBalanceamento(rotas){
+  for (let iter=0; iter<40; iter++){
+    let moveu=false;
+    const setores=[...new Set(rotas.map(r=>r.setor))];
+    for (const s of setores){
+      const grp=rotas.filter(r=>r.setor===s && r.onda==="VAREJO");
+      if (grp.length<2) continue;
+      // pega o par mais desbalanceado (dif de entregas e peso)
+      let par=null,melhor=0;
+      for (let i=0;i<grp.length;i++) for (let j=0;j<grp.length;j++){
+        if (i===j) continue;
+        const pa=grp[i].clientes.reduce((a,c)=>a+peso(c),0);
+        const pb=grp[j].clientes.reduce((a,c)=>a+peso(c),0);
+        const na=grp[i].clientes.length, nb=grp[j].clientes.length;
+        // regra: A "pesado + muitas entregas" doa cliente pra B "leve + poucas entregas"
+        // (a rota mais pesada tem que ter MENOS entregas — equilíbrio real)
+        if (pa-pb<CFG.DIF_PESO_BAL) continue;
+        if (na-nb<CFG.DIF_CLI_BAL) continue;
+        if (hav(centro(grp[i].clientes),centro(grp[j].clientes)) > CFG.VIZINHA_KM) continue;
+        const score=(pa-pb)+(na-nb)*300;
+        if (score>melhor){ melhor=score; par={a:grp[i],b:grp[j]}; }
+      }
+      if (!par) continue;
+      // move o cliente da A mais próximo do centro de B, respeitando teto de peso
+      const cb=centro(par.b.clientes);
+      const cand=par.a.clientes.filter(c=>c.lat!=null).sort((x,y)=>hav(x,cb)-hav(y,cb));
+      for (const c of cand){
+        const novo=par.b.clientes.reduce((a,x)=>a+peso(x),0)+peso(c);
+        if (novo>CFG.TRESQ) continue;
+        if (par.b.clientes.length>=CFG.MAX_CLI_VAREJO) continue;
+        par.a.clientes.splice(par.a.clientes.indexOf(c),1);
+        par.b.clientes.push(c);
+        moveu=true; break;
+      }
+      if (moveu) break;
+    }
+    if (!moveu) break;
+  }
+}
+
+/* ---------- C) QUEBRA rotas muito longas (Itaqua/Aruja/Guarulhos) ---------- */
+function quebraLongas(rotas){
+  const out=[];
+  for (const r of rotas){
+    if (r.placa || r.clientes.length<=3){ out.push(r); continue; }
+    const km=desloc(r.clientes);
+    if (km<=CFG.MAX_KM_ROTA){ out.push(r); continue; }
+    const sub=divide(r.clientes,2);
+    const okDividir = sub.length===2
+      && sub.every(g=>g.length>=1)
+      && sub.every(g=>g.reduce((a,c)=>a+peso(c),0)<=CFG.TRESQ);
+    if (!okDividir){ out.push(r); continue; }
+    for (const g of sub) out.push({setor:r.setor,onda:r.onda,clientes:g});
+  }
+  return out;
 }
 
 /* ============================================================================
@@ -319,6 +431,13 @@ function roteirizar(dados, pos, escala, dataAlvo){
       if (mudou) break;
     }
   }
+
+  // A) ALÍVIO: rota varejo estufada empurra cliente próximo pra rota REDE do mesmo setor
+  aliviaVarejoEmRede(rotas);
+  // B) BALANCEAMENTO peso × entregas entre rotas varejo vizinhas do mesmo setor
+  posBalanceamento(rotas);
+  // C) QUEBRA rotas com deslocamento gigante (proxy: barreiras Itaqua/Aruja/Guarulhos)
+  rotas = quebraLongas(rotas);
 
   // DISTRIBUIDOR fixo
   if (distrib.length) rotas.push({setor:"DISTRIBUIDOR",onda:"DISTRIB",clientes:distrib,placa:CFG.DISTRIB_PLACA});
