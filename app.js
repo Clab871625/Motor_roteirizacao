@@ -42,7 +42,10 @@ document.getElementById('btnRun').addEventListener('click', ()=>{
     RESULT=window.MotorEspelho.roteirizar(DADOS, POS, escala, data);
     // mostra o wrap ANTES de medir, senão main pode ter altura 0 na primeira renderização
     document.getElementById('empty').style.display='none';
-    document.getElementById('svgwrap').style.display='block';
+    const wrap=document.getElementById('svgwrap');
+    // força o wrapper a ocupar todo o main (evita altura 0 em Chromium)
+    wrap.style.cssText='display:block;position:absolute;inset:0;background:var(--bg)';
+    document.getElementById('svg').style.cssText='display:block;width:100%;height:100%';
     document.getElementById('kpis').style.display='grid';
     document.getElementById('flt').style.display='flex';
     requestAnimationFrame(()=>render(RESULT));

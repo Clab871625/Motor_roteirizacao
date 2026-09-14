@@ -25,6 +25,9 @@ const CFG = {
   MAX_KM_ROTA: 90,         // deslocamento máx por rota (estrada, ida+volta CD)
   DIF_CLI_BAL: 3,          // diferença mínima de clientes entre vizinhas pra rebalancear
   DIF_PESO_BAL: 400,       // diferença mínima de peso (kg) pra considerar rota "pesada"
+  MIN_KG_ROTA: 300,        // rota abaixo disso é fundida na vizinha (piso absoluto)
+  DIST_VIZINHA_VAREJO: 3.5,// varejo "vizinho" pra balancear (< isso = balanceia; >= isso = cria mista)
+  MIX_TIRA_VAREJO: 6,      // quantos varejos vão pra rota mista quando cria
 };
 const DIAS = ["segunda","terca","quarta","quinta","sexta","sabado","domingo"];
 
@@ -143,6 +146,8 @@ function balanceiaVizinhas(grupos, capKg, ondaRede){
         }
         if (!ok) continue;
       }
+      // varejo: nunca empurra pra rota que vai passar de 17 entregas
+      if (!ondaRede && vazia.length>=CFG.MAX_CLI_VAREJO) continue;
       if (vazia.reduce((s,x)=>s+peso(x),0)+peso(c) <= capKg){
         cheia.splice(cheia.indexOf(c),1); vazia.push(c); moved=true; break;
       }
@@ -166,7 +171,123 @@ function desloc(cls){
   return d*CFG.DIST_FACTOR;
 }
 
-/* ---------- A) ALÍVIO varejo -> rede do mesmo setor ---------- */
+/* ---------- A.NOVA) ALÍVIO INTELIGENTE ----------
+   Ordem de tentativa pra rota varejo > 17:
+   (1) balanceia com rota varejo do MESMO setor cujo centro esteja < DIST_VIZINHA_VAREJO
+   (2) senão, CRIA rota mista: 1 rede leve do setor (tirada de uma rede existente que
+       comporta perder essa loja) + N varejos mais próximos dessa rede
+   (3) senão, empurra pro rede existente (regra antiga)
+*/
+function aliviaVarejoInteligente(rotas){
+  for (let iter=0; iter<15; iter++){
+    let acao=false;
+    const cheias = rotas.filter(r=>r.onda==="VAREJO" && r.clientes.length>CFG.MAX_CLI_VAREJO);
+    for (const v of cheias){
+      const s = v.setor;
+      const cv = centro(v.clientes);
+      // (1) vizinho varejo perto
+      const vizVar = rotas.filter(r=>r!==v && r.onda==="VAREJO" && r.setor===s
+        && r.clientes.length<CFG.MAX_CLI_VAREJO
+        && r.clientes.reduce((a,c)=>a+peso(c),0)<CFG.TRESQ-100);
+      vizVar.sort((a,b)=>hav(cv,centro(a.clientes))-hav(cv,centro(b.clientes)));
+      if (vizVar.length && hav(cv,centro(vizVar[0].clientes)) < CFG.DIST_VIZINHA_VAREJO){
+        const alvo = vizVar[0];
+        const ca = centro(alvo.clientes);
+        // move o cliente mais próximo do centro do alvo, respeitando pesos
+        const cand = v.clientes.filter(c=>c.lat!=null).sort((a,b)=>hav(a,ca)-hav(b,ca));
+        for (const c of cand){
+          const novoPeso = alvo.clientes.reduce((s,x)=>s+peso(x),0)+peso(c);
+          if (novoPeso>CFG.TRESQ) continue;
+          if (alvo.clientes.length>=CFG.MAX_CLI_VAREJO) break;
+          alvo.clientes.push(c);
+          v.clientes.splice(v.clientes.indexOf(c),1);
+          acao=true; break;
+        }
+        if (acao) break;
+      }
+      // (2) cria rota mista com 1 rede leve do setor + N varejos
+      const redesSetor = rotas.filter(r=>r.onda==="REDE" && r.setor===s && !r.placa);
+      let redeEscolhida=null, redeOrigem=null;
+      for (const rr of redesSetor){
+        // procura loja rede leve (<= TRESQ/2) que não deixe a origem vazia
+        if (rr.clientes.length<2) continue;
+        const leve = rr.clientes.filter(x=>peso(x)<=900).sort((a,b)=>hav(a,cv)-hav(b,cv));
+        if (leve.length){ redeEscolhida=leve[0]; redeOrigem=rr; break; }
+      }
+      if (redeEscolhida){
+        // puxa N varejos mais próximos da rede escolhida
+        const cr = {lat:redeEscolhida.lat, lng:redeEscolhida.lng};
+        const nTira = Math.min(CFG.MIX_TIRA_VAREJO, v.clientes.length - CFG.MAX_CLI_VAREJO + 2);
+        const sorted = v.clientes.filter(c=>c.lat!=null).sort((a,b)=>hav(a,cr)-hav(b,cr));
+        const puxa = sorted.slice(0, nTira);
+        let mistaPeso = peso(redeEscolhida) + puxa.reduce((s,c)=>s+peso(c),0);
+        if (mistaPeso>CFG.TRESQ){
+          // ajusta n pra caber
+          const puxaAjust=[]; let acc=peso(redeEscolhida);
+          for (const c of puxa){ if (acc+peso(c)>CFG.TRESQ) break; puxaAjust.push(c); acc+=peso(c); }
+          if (!puxaAjust.length) continue;
+          redeOrigem.clientes.splice(redeOrigem.clientes.indexOf(redeEscolhida),1);
+          for (const c of puxaAjust) v.clientes.splice(v.clientes.indexOf(c),1);
+          rotas.push({setor:s,onda:"MIX",clientes:[redeEscolhida,...puxaAjust]});
+        } else {
+          redeOrigem.clientes.splice(redeOrigem.clientes.indexOf(redeEscolhida),1);
+          for (const c of puxa) v.clientes.splice(v.clientes.indexOf(c),1);
+          rotas.push({setor:s,onda:"MIX",clientes:[redeEscolhida,...puxa]});
+        }
+        acao=true; break;
+      }
+      // (3) fallback: empurra 1 pra rede existente
+      const rs = rotas.filter(r=>r.setor===s && r.onda==="REDE" && !r.placa
+        && r.clientes.reduce((a,c)=>a+peso(c),0)<CFG.TRESQ-100);
+      if (rs.length){
+        const cds = rs.map(r=>({r,c:centro(r.clientes)}));
+        const escolha = v.clientes.filter(c=>c.lat!=null).map(c=>{
+          let best=1e9,alvo=null;
+          for (const x of cds){ const d=hav(c,x.c); if (d<best){best=d;alvo=x;} }
+          return {c,alvo,d:best};
+        }).filter(x=>x.alvo).sort((a,b)=>a.d-b.d)[0];
+        if (escolha){
+          const novoPeso = escolha.alvo.r.clientes.reduce((s,x)=>s+peso(x),0)+peso(escolha.c);
+          if (novoPeso<=CFG.TRESQ){
+            escolha.alvo.r.clientes.push(escolha.c);
+            v.clientes.splice(v.clientes.indexOf(escolha.c),1);
+            acao=true; break;
+          }
+        }
+      }
+    }
+    if (!acao) break;
+  }
+  return rotas;
+}
+
+/* ---------- D) PISO 300 kg — funde rotas magras ---------- */
+function fundePequenas(rotas){
+  let mudou=true;
+  while (mudou){
+    mudou=false;
+    const setores=[...new Set(rotas.map(r=>r.setor))];
+    for (const s of setores){
+      const grp=rotas.filter(r=>r.setor===s && !r.placa);
+      const pequenas=grp.filter(r=>r.clientes.reduce((a,c)=>a+peso(c),0)<CFG.MIN_KG_ROTA && grp.length>1);
+      for (const m of pequenas){
+        const outras=grp.filter(r=>r!==m);
+        const mPeso=m.clientes.reduce((a,c)=>a+peso(c),0);
+        const cand=outras.filter(r=>r.clientes.reduce((a,c)=>a+peso(c),0)+mPeso<=CFG.TRESQ
+          && r.clientes.length+m.clientes.length<=CFG.MAX_CLI_VAREJO);
+        if (!cand.length) continue;
+        cand.sort((a,b)=>hav(centro(m.clientes),centro(a.clientes))-hav(centro(m.clientes),centro(b.clientes)));
+        cand[0].clientes.push(...m.clientes);
+        rotas.splice(rotas.indexOf(m),1);
+        mudou=true; break;
+      }
+      if (mudou) break;
+    }
+  }
+  return rotas;
+}
+
+/* ---------- (antiga, agora só fallback interno de aliviaVarejoInteligente) ---------- */
 function aliviaVarejoEmRede(rotas){
   for (let iter=0; iter<20; iter++){
     let moveu=false;
@@ -432,12 +553,16 @@ function roteirizar(dados, pos, escala, dataAlvo){
     }
   }
 
-  // A) ALÍVIO: rota varejo estufada empurra cliente próximo pra rota REDE do mesmo setor
-  aliviaVarejoEmRede(rotas);
+  // A) ALÍVIO: rota varejo estufada — 1º tenta balancear com varejo próximo (< 3.5 km);
+  //    se o mais próximo é distante, CRIA rota mista REDE+VAREJO puxando 1 rede do
+  //    setor + 5-6 varejos da cheia. Só depois cai no "empurra pra rede existente".
+  rotas = aliviaVarejoInteligente(rotas);
   // B) BALANCEAMENTO peso × entregas entre rotas varejo vizinhas do mesmo setor
   posBalanceamento(rotas);
   // C) QUEBRA rotas com deslocamento gigante (proxy: barreiras Itaqua/Aruja/Guarulhos)
   rotas = quebraLongas(rotas);
+  // D) PISO 300 kg — funde qualquer rota abaixo disso na vizinha do mesmo setor
+  rotas = fundePequenas(rotas);
 
   // DISTRIBUIDOR fixo
   if (distrib.length) rotas.push({setor:"DISTRIBUIDOR",onda:"DISTRIB",clientes:distrib,placa:CFG.DISTRIB_PLACA});
