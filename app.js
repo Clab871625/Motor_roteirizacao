@@ -80,12 +80,6 @@ function render(res){
   // limpa layers anteriores
   LLAYERS.forEach(l=>LMAP.removeLayer(l)); LLAYERS=[];
 
-  // barreiras físicas (rodovias) — motor evita cruzar
-  (window.MotorEspelho.BARREIRAS||[]).forEach(barr=>{
-    const line = L.polyline(barr.pts, {color:'#ff3b30', weight:3, opacity:0.35, dashArray:'8,6'})
-      .bindTooltip('🚧 '+barr.nome+' (barreira)', {sticky:true}).addTo(LMAP);
-    LLAYERS.push(line);
-  });
   // CD
   const cdMarker = L.circleMarker([CD_PT().lat, CD_PT().lng],
     {radius:9, color:'#fff', fillColor:'#10b981', fillOpacity:1, weight:2})

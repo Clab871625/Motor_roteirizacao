@@ -4,41 +4,6 @@
    ============================================================================ */
 
 const CD = { lat: -23.575768, lng: -46.306107 };
-
-/* ========== BARREIRAS FÍSICAS ==========
-   Rodovias / vias que rotas NÃO devem cruzar sem forte penalidade.
-   Cada barreira é uma polyline [[lat,lng],...]. Segmentos entre pontos
-   consecutivos são checados por intersecção contra o trecho cliente→cliente.
-   Coordenadas são aproximadas; ajustar quando aparecer caso ruim.
-*/
-const BARREIRAS = [
-  { nome:"Ayrton Senna (SP-070)", pts:[
-    [-23.437,-46.480],[-23.427,-46.430],[-23.418,-46.380],[-23.410,-46.330],
-    [-23.402,-46.270],[-23.400,-46.220],[-23.410,-46.160],[-23.425,-46.110]
-  ]},
-  { nome:"Rodoanel Leste (SP-021)", pts:[
-    [-23.402,-46.335],[-23.440,-46.352],[-23.500,-46.360],[-23.560,-46.368],
-    [-23.615,-46.385],[-23.680,-46.410]
-  ]},
-  { nome:"Dutra (BR-116) leste", pts:[
-    [-23.418,-46.560],[-23.425,-46.500],[-23.430,-46.440],[-23.428,-46.380],
-    [-23.418,-46.335]
-  ]},
-];
-function _ccw(a,b,c){ return (c.lng-a.lng)*(b.lat-a.lat) > (b.lng-a.lng)*(c.lat-a.lat); }
-function segCruza(a,b,c,d){ return _ccw(a,c,d)!==_ccw(b,c,d) && _ccw(a,b,c)!==_ccw(a,b,d); }
-function nBarreirasCruzadas(a,b){
-  if (!a || !b || a.lat==null || b.lat==null) return 0;
-  let n=0;
-  for (const barr of BARREIRAS){
-    for (let i=0;i<barr.pts.length-1;i++){
-      const p3={lat:barr.pts[i][0],lng:barr.pts[i][1]};
-      const p4={lat:barr.pts[i+1][0],lng:barr.pts[i+1][1]};
-      if (segCruza(a,b,p3,p4)) n++;
-    }
-  }
-  return n;
-}
 const CFG = {
   DIST_FACTOR: 2.0,        // reta -> estrada (Suzano)
   VEL_KMH: 32,             // velocidade média urbana
@@ -57,20 +22,13 @@ const CFG = {
   MAX_CLI_PART: 12,        // teto de entregas por rota de particularidade
   PREFERE_2_VUC: true,     // dividir 1 rota que caberia num 3/4 em 2 VUCs
   ALIVIO_VAREJO: 15,       // acima disso, tenta empurrar cliente pra rota rede vizinha
-  KM_ALTO_MIX: 55,         // rota varejo passando disso vira candidata a MIX (quebra com rede leve)
-  CLI_ALTO_MIX: 12,        // ...desde que também tenha esse mínimo de clientes
   MAX_KM_ROTA: 90,         // deslocamento máx por rota (estrada, ida+volta CD)
   DIF_CLI_BAL: 3,          // diferença mínima de clientes entre vizinhas pra rebalancear
   DIF_PESO_BAL: 400,       // diferença mínima de peso (kg) pra considerar rota "pesada"
   MIN_KG_ROTA: 300,        // rota abaixo disso é fundida na vizinha (piso absoluto)
   DIST_VIZINHA_VAREJO: 3.5,// varejo "vizinho" pra balancear (< isso = balanceia; >= isso = cria mista)
   MIX_TIRA_VAREJO: 6,      // quantos varejos vão pra rota mista quando cria
-  PENAL_BARREIRA_KM: 15,   // custo (km) somado por cada barreira física atravessada
 };
-
-/* Haversine com penalidade por atravessar barreira física.
-   USAR em toda decisão de agrupar/transferir cliente entre rotas. */
-function havB(a,b){ return hav(a,b) + nBarreirasCruzadas(a,b)*CFG.PENAL_BARREIRA_KM; }
 const DIAS = ["segunda","terca","quarta","quinta","sexta","sabado","domingo"];
 
 /* ---------- utilidades geográficas ---------- */
@@ -137,7 +95,7 @@ function divide(cls, k){
     groups = Array.from({length:k},()=>[]);
     for (const i of idx){
       let kb=0,best=1e9;
-      for (let j=0;j<k;j++){const d=havB(pts[i],seeds[j]); if(d<best){best=d;kb=j;}}
+      for (let j=0;j<k;j++){const d=hav(pts[i],seeds[j]); if(d<best){best=d;kb=j;}}
       groups[kb].push(i);
     }
     for (let j=0;j<k;j++){
@@ -164,7 +122,7 @@ function balanceiaVizinhas(grupos, capKg, ondaRede){
     for (let i=0;i<grupos.length;i++){
       for (let j=0;j<grupos.length;j++){
         if (i===j || !grupos[i].length || !grupos[j].length) continue;
-        if (havB(centro(grupos[i]),centro(grupos[j])) > CFG.VIZINHA_KM) continue;
+        if (hav(centro(grupos[i]),centro(grupos[j])) > CFG.VIZINHA_KM) continue;
         const dif = cargaScore(grupos[i]) - cargaScore(grupos[j]);
         if (dif>0 && (!melhor || dif>melhor.dif)) melhor={i,j,dif};
       }
@@ -173,7 +131,7 @@ function balanceiaVizinhas(grupos, capKg, ondaRede){
     const cheia=grupos[melhor.i], vazia=grupos[melhor.j];
     if (cheia.length<=1) break;
     const cv=centro(vazia);
-    const cand=cheia.filter(c=>c.lat!=null).sort((a,b)=>havB(a,cv)-havB(b,cv));
+    const cand=cheia.filter(c=>c.lat!=null).sort((a,b)=>hav(a,cv)-hav(b,cv));
     let moved=false;
     for (const c of cand){
       if (ondaRede){
@@ -223,29 +181,20 @@ function desloc(cls){
 function aliviaVarejoInteligente(rotas){
   for (let iter=0; iter<15; iter++){
     let acao=false;
-    const cheias = rotas.filter(r=>{
-      if (r.onda!=="VAREJO") return false;
-      // dispara pra rota estufada (> 17) OU rota rodando muito com muitos pontos
-      if (r.clientes.length>CFG.MAX_CLI_VAREJO) return true;
-      if (r.clientes.length>=CFG.CLI_ALTO_MIX && desloc(r.clientes)>CFG.KM_ALTO_MIX) return true;
-      return false;
-    });
+    const cheias = rotas.filter(r=>r.onda==="VAREJO" && r.clientes.length>CFG.MAX_CLI_VAREJO);
     for (const v of cheias){
       const s = v.setor;
       const cv = centro(v.clientes);
-      const kmRodado = desloc(v.clientes);
-      // rota "espalhada" (muitos km) prefere MIX direto — pular passo (1)
-      const preferirMix = kmRodado>CFG.KM_ALTO_MIX && v.clientes.length>=CFG.CLI_ALTO_MIX;
-      // (1) vizinho varejo perto — só se NÃO for caso de km alto
-      const vizVar = preferirMix ? [] : rotas.filter(r=>r!==v && r.onda==="VAREJO" && r.setor===s
+      // (1) vizinho varejo perto
+      const vizVar = rotas.filter(r=>r!==v && r.onda==="VAREJO" && r.setor===s
         && r.clientes.length<CFG.MAX_CLI_VAREJO
         && r.clientes.reduce((a,c)=>a+peso(c),0)<CFG.TRESQ-100);
-      vizVar.sort((a,b)=>havB(cv,centro(a.clientes))-havB(cv,centro(b.clientes)));
-      if (vizVar.length && havB(cv,centro(vizVar[0].clientes)) < CFG.DIST_VIZINHA_VAREJO){
+      vizVar.sort((a,b)=>hav(cv,centro(a.clientes))-hav(cv,centro(b.clientes)));
+      if (vizVar.length && hav(cv,centro(vizVar[0].clientes)) < CFG.DIST_VIZINHA_VAREJO){
         const alvo = vizVar[0];
         const ca = centro(alvo.clientes);
         // move o cliente mais próximo do centro do alvo, respeitando pesos
-        const cand = v.clientes.filter(c=>c.lat!=null).sort((a,b)=>havB(a,ca)-havB(b,ca));
+        const cand = v.clientes.filter(c=>c.lat!=null).sort((a,b)=>hav(a,ca)-hav(b,ca));
         for (const c of cand){
           const novoPeso = alvo.clientes.reduce((s,x)=>s+peso(x),0)+peso(c);
           if (novoPeso>CFG.TRESQ) continue;
@@ -262,14 +211,14 @@ function aliviaVarejoInteligente(rotas){
       for (const rr of redesSetor){
         // procura loja rede leve (<= TRESQ/2) que não deixe a origem vazia
         if (rr.clientes.length<2) continue;
-        const leve = rr.clientes.filter(x=>peso(x)<=900).sort((a,b)=>havB(a,cv)-havB(b,cv));
+        const leve = rr.clientes.filter(x=>peso(x)<=900).sort((a,b)=>hav(a,cv)-hav(b,cv));
         if (leve.length){ redeEscolhida=leve[0]; redeOrigem=rr; break; }
       }
       if (redeEscolhida){
         // puxa N varejos mais próximos da rede escolhida
         const cr = {lat:redeEscolhida.lat, lng:redeEscolhida.lng};
         const nTira = Math.min(CFG.MIX_TIRA_VAREJO, v.clientes.length - CFG.MAX_CLI_VAREJO + 2);
-        const sorted = v.clientes.filter(c=>c.lat!=null).sort((a,b)=>havB(a,cr)-havB(b,cr));
+        const sorted = v.clientes.filter(c=>c.lat!=null).sort((a,b)=>hav(a,cr)-hav(b,cr));
         const puxa = sorted.slice(0, nTira);
         let mistaPeso = peso(redeEscolhida) + puxa.reduce((s,c)=>s+peso(c),0);
         if (mistaPeso>CFG.TRESQ){
@@ -294,7 +243,7 @@ function aliviaVarejoInteligente(rotas){
         const cds = rs.map(r=>({r,c:centro(r.clientes)}));
         const escolha = v.clientes.filter(c=>c.lat!=null).map(c=>{
           let best=1e9,alvo=null;
-          for (const x of cds){ const d=havB(c,x.c); if (d<best){best=d;alvo=x;} }
+          for (const x of cds){ const d=hav(c,x.c); if (d<best){best=d;alvo=x;} }
           return {c,alvo,d:best};
         }).filter(x=>x.alvo).sort((a,b)=>a.d-b.d)[0];
         if (escolha){
@@ -327,7 +276,7 @@ function fundePequenas(rotas){
         const cand=outras.filter(r=>r.clientes.reduce((a,c)=>a+peso(c),0)+mPeso<=CFG.TRESQ
           && r.clientes.length+m.clientes.length<=CFG.MAX_CLI_VAREJO);
         if (!cand.length) continue;
-        cand.sort((a,b)=>havB(centro(m.clientes),centro(a.clientes))-havB(centro(m.clientes),centro(b.clientes)));
+        cand.sort((a,b)=>hav(centro(m.clientes),centro(a.clientes))-hav(centro(m.clientes),centro(b.clientes)));
         cand[0].clientes.push(...m.clientes);
         rotas.splice(rotas.indexOf(m),1);
         mudou=true; break;
@@ -393,14 +342,14 @@ function posBalanceamento(rotas){
         // (a rota mais pesada tem que ter MENOS entregas — equilíbrio real)
         if (pa-pb<CFG.DIF_PESO_BAL) continue;
         if (na-nb<CFG.DIF_CLI_BAL) continue;
-        if (havB(centro(grp[i].clientes),centro(grp[j].clientes)) > CFG.VIZINHA_KM) continue;
+        if (hav(centro(grp[i].clientes),centro(grp[j].clientes)) > CFG.VIZINHA_KM) continue;
         const score=(pa-pb)+(na-nb)*300;
         if (score>melhor){ melhor=score; par={a:grp[i],b:grp[j]}; }
       }
       if (!par) continue;
       // move o cliente da A mais próximo do centro de B, respeitando teto de peso
       const cb=centro(par.b.clientes);
-      const cand=par.a.clientes.filter(c=>c.lat!=null).sort((x,y)=>havB(x,cb)-havB(y,cb));
+      const cand=par.a.clientes.filter(c=>c.lat!=null).sort((x,y)=>hav(x,cb)-hav(y,cb));
       for (const c of cand){
         const novo=par.b.clientes.reduce((a,x)=>a+peso(x),0)+peso(c);
         if (novo>CFG.TRESQ) continue;
@@ -482,7 +431,7 @@ function roteirizar(dados, pos, escala, dataAlvo){
     if (clienteSetor[c.cod] && setoresSimples[clienteSetor[c.cod].s]) s=clienteSetor[c.cod].s;
     else if (c.lat!=null){
       let best=1e9;
-      for (const k in setoresSimples){const d=havB(c,setoresSimples[k]); if(d<best){best=d;s=k;}}
+      for (const k in setoresSimples){const d=hav(c,setoresSimples[k]); if(d<best){best=d;s=k;}}
     } else s="Suzano";
     (porSetor[s]=porSetor[s]||{VAREJO:[],PARTICULAR:[],REDE:[]})[cat].push(c);
   }
@@ -531,7 +480,7 @@ function roteirizar(dados, pos, escala, dataAlvo){
         && r.clientes.length < CFG.MAX_CLI_VAREJO
       );
       if (cand.length && p.lat!=null){
-        cand.sort((a,b)=>havB(p,centro(a.clientes))-havB(p,centro(b.clientes)));
+        cand.sort((a,b)=>hav(p,centro(a.clientes))-hav(p,centro(b.clientes)));
         cand[0].clientes.push(p);
       } else rotas.push({setor:s,onda:"PARTICULAR",clientes:[p]});
     }
@@ -553,7 +502,7 @@ function roteirizar(dados, pos, escala, dataAlvo){
         && r.clientes.length < CFG.MAX_CLI_VAREJO
         && r.clientes.reduce((a,c)=>a+peso(c),0)+peso(cp)<=CFG.TRESQ
       );
-      if (cand.length && cp.lat!=null){ cand.sort((a,b)=>havB(cp,centro(a.clientes))-havB(cp,centro(b.clientes))); cand[0].clientes.push(cp); }
+      if (cand.length && cp.lat!=null){ cand.sort((a,b)=>hav(cp,centro(a.clientes))-hav(cp,centro(b.clientes))); cand[0].clientes.push(cp); }
       else grandes.push(cp);
     }
     grandes.sort((a,b)=>peso(b)-peso(a));
@@ -595,7 +544,7 @@ function roteirizar(dados, pos, escala, dataAlvo){
           const outras=grp.filter(r=>r!==m);
           const cand=outras.filter(r=>r.clientes.reduce((a,c)=>a+peso(c),0)+m.clientes.reduce((a,c)=>a+peso(c),0)<=CFG.TRESQ);
           if (!cand.length) continue;
-          cand.sort((a,b)=>havB(centro(m.clientes),centro(a.clientes))-havB(centro(m.clientes),centro(b.clientes)));
+          cand.sort((a,b)=>hav(centro(m.clientes),centro(a.clientes))-hav(centro(m.clientes),centro(b.clientes)));
           cand[0].clientes.push(...m.clientes); rotas.splice(rotas.indexOf(m),1); mudou=true; break;
         }
         if (mudou) break;
@@ -700,4 +649,4 @@ function pegaPlaca(frota, pw, setor){
   return pool[0];
 }
 
-window.MotorEspelho = { roteirizar, CFG, classifica, hav, havB, DIAS, BARREIRAS };
+window.MotorEspelho = { roteirizar, CFG, classifica, hav, DIAS };
